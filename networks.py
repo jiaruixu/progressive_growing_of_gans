@@ -143,6 +143,7 @@ def minibatch_stddev_layer(x, group_size=4):
 
 def G_paper(
     latents_in,                         # First input: Latent vectors [minibatch, latent_size].
+    depth_images_in,                    # Add depth image
     labels_in,                          # Second input: Labels [minibatch, label_size].
     num_channels        = 1,            # Number of output color channels. Overridden based on dataset.
     resolution          = 32,           # Output resolution. Overridden based on dataset.
@@ -150,7 +151,7 @@ def G_paper(
     fmap_base           = 8192,         # Overall multiplier for the number of feature maps.
     fmap_decay          = 1.0,          # log2 feature map reduction when doubling the resolution.
     fmap_max            = 512,          # Maximum number of feature maps in any layer.
-    latent_size         = None,         # Dimensionality of the latent vectors. None = min(fmap_base, fmap_max).
+    latent_size         = 256,          # latent_size = None, Dimensionality of the latent vectors. None = min(fmap_base, fmap_max).
     normalize_latents   = True,         # Normalize latent vectors before feeding them to the network?
     use_wscale          = True,         # Enable equalized learning rate?
     use_pixelnorm       = True,         # Enable pixelwise feature vector normalization?
@@ -160,6 +161,7 @@ def G_paper(
     fused_scale         = True,         # True = use fused upscale2d + conv2d, False = separate upscale2d layers.
     structure           = None,         # 'linear' = human-readable, 'recursive' = efficient, None = select automatically.
     is_template_graph   = False,        # True = template graph constructed by the Network class, False = actual evaluation.
+    add_depth_images    = True,         # True = add depth images
     **kwargs):                          # Ignore unrecognized keyword args.
     
     resolution_log2 = int(np.log2(resolution))
@@ -169,10 +171,21 @@ def G_paper(
     if latent_size is None: latent_size = nf(0)
     if structure is None: structure = 'linear' if is_template_graph else 'recursive'
     act = leaky_relu if use_leakyrelu else tf.nn.relu
-    
+
     latents_in.set_shape([None, latent_size])
     labels_in.set_shape([None, label_size])
     combo_in = tf.cast(tf.concat([latents_in, labels_in], axis=1), dtype)
+    ## added by Jiarui
+    # if add_depth_images:
+    #     depth_images_in.set_shape([None, 1, resolution, resolution])
+    #     latents_in.set_shape([None, 1, resolution, resolution])
+    #     labels_in.set_shape([None, label_size])
+    #     combo_in = tf.cast(tf.concat([depth_images_in, latents_in], axis=1), dtype)
+    # else:
+    #     latents_in.set_shape([None, latent_size])
+    #     labels_in.set_shape([None, label_size])
+    #     combo_in = tf.cast(tf.concat([latents_in, labels_in], axis=1), dtype)
+    ## end added by Jiarui
     lod_in = tf.cast(tf.get_variable('lod', initializer=np.float32(0.0), trainable=False), dtype)
 
     # Building blocks.
@@ -201,6 +214,52 @@ def G_paper(
         lod = resolution_log2 - res
         with tf.variable_scope('ToRGB_lod%d' % lod):
             return apply_bias(conv2d(x, fmaps=num_channels, kernel=1, gain=1, use_wscale=use_wscale))
+
+
+    ## added by Jiarui
+    def fromrgb(x, res): # res = 2..resolution_log2
+        with tf.variable_scope('FromRGB_lod%d' % (resolution_log2 - res)):
+            return act(apply_bias(conv2d(x, fmaps=nf(res-1), kernel=1, use_wscale=use_wscale)))
+    def block2(x, res): # res = 2..resolution_log2
+        with tf.variable_scope('%dx%d' % (2**res, 2**res)):
+            if res >= 3: # 8x8 and up
+                with tf.variable_scope('Conv0'):
+                    x = act(apply_bias(conv2d(x, fmaps=nf(res-1), kernel=3, use_wscale=use_wscale)))
+                if fused_scale:
+                    with tf.variable_scope('Conv1_down'):
+                        x = act(apply_bias(conv2d_downscale2d(x, fmaps=nf(res-2), kernel=3, use_wscale=use_wscale)))
+                else:
+                    with tf.variable_scope('Conv1'):
+                        x = act(apply_bias(conv2d(x, fmaps=nf(res-2), kernel=3, use_wscale=use_wscale)))
+                    x = downscale2d(x)
+            else: # 4x4
+                # if mbstd_group_size > 1:
+                #     x = minibatch_stddev_layer(x, mbstd_group_size)
+                with tf.variable_scope('Conv'):
+                    x = act(apply_bias(conv2d(x, fmaps=nf(res-1), kernel=3, use_wscale=use_wscale)))
+                with tf.variable_scope('Dense0'):
+                    x = act(apply_bias(dense(x, fmaps=nf(res-2), use_wscale=use_wscale)))
+                with tf.variable_scope('Dense1'):
+                    x = apply_bias(dense(x, fmaps=nf(0)-latent_size, use_wscale=use_wscale))
+            return x
+
+    if add_depth_images:
+        # mbstd_group_size = 4
+        depth_images_in.set_shape([None, 1, resolution, resolution])
+        depth_images_in = tf.cast(depth_images_in, dtype)
+        img = depth_images_in
+        x = fromrgb(img, resolution_log2)
+        for res in range(resolution_log2, 2, -1):
+            lod = resolution_log2 - res
+            x = block2(x, res)
+            img = downscale2d(img)
+            y = fromrgb(img, res - 1)
+            with tf.variable_scope('Grow_lod%d' % lod):
+                x = lerp_clip(x, y, lod_in - lod)
+        combo_out = block2(x, 2)
+        combo_in = tf.cast(tf.concat([combo_in, combo_out], axis=1), dtype)
+    ## end added by Jiarui
+
 
     # Linear structure: simple but inefficient.
     if structure == 'linear':

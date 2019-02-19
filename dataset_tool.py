@@ -15,6 +15,9 @@ import traceback
 import numpy as np
 import tensorflow as tf
 import PIL.Image
+import scipy.misc
+import six
+import six.moves
 
 import tfutil
 import dataset
@@ -43,7 +46,7 @@ class TFRecordExporter:
         if not os.path.isdir(self.tfrecord_dir):
             os.makedirs(self.tfrecord_dir)
         assert(os.path.isdir(self.tfrecord_dir))
-        
+
     def close(self):
         if self.print_progress:
             print('%-40s\r' % 'Flushing data...', end='', flush=True)
@@ -65,7 +68,7 @@ class TFRecordExporter:
         if self.shape is None:
             self.shape = img.shape
             self.resolution_log2 = int(np.log2(self.shape[1]))
-            assert self.shape[0] in [1, 3]
+            assert self.shape[0] in [1, 3, 4]
             assert self.shape[1] == self.shape[2]
             assert self.shape[1] == 2**self.resolution_log2
             tfr_opt = tf.python_io.TFRecordOptions(tf.python_io.TFRecordCompressionType.NONE)
@@ -84,16 +87,57 @@ class TFRecordExporter:
             tfr_writer.write(ex.SerializeToString())
         self.cur_images += 1
 
+    # ##
+    # def add_image_and_depth(self, img_in, depth_in):
+    #     img = img_in.copy()
+    #     depth = depth_in.copy()
+    #
+    #     if self.print_progress and self.cur_images % self.progress_interval == 0:
+    #         print('%d / %d\r' % (self.cur_images, self.expected_images), end='', flush=True)
+    #     if self.shape is None:
+    #         self.shape = img.shape
+    #         self.resolution_log2 = int(np.log2(self.shape[1]))
+    #         assert self.shape[0] in [1, 3, 4]
+    #         assert self.shape[1] == self.shape[2]
+    #         assert self.shape[1] == 2**self.resolution_log2
+    #         tfr_opt = tf.python_io.TFRecordOptions(tf.python_io.TFRecordCompressionType.NONE)
+    #         for lod in range(self.resolution_log2 - 1):
+    #             tfr_file = self.tfr_prefix + '-r%02d.tfrecords' % (self.resolution_log2 - lod)
+    #             self.tfr_writers.append(tf.python_io.TFRecordWriter(tfr_file, tfr_opt))
+    #     assert img.shape == self.shape
+    #     for lod, tfr_writer in enumerate(self.tfr_writers):
+    #         if lod:
+    #             img = img.astype(np.float32)
+    #             img = (img[:, 0::2, 0::2] + img[:, 0::2, 1::2] + img[:, 1::2, 0::2] + img[:, 1::2, 1::2]) * 0.25
+    #             ##
+    #             depth = depth.astype(np.float32)
+    #             depth = (depth[:, 0::2, 0::2] + depth[:, 0::2, 1::2] + depth[:, 1::2, 0::2] + depth[:, 1::2,
+    #                                                                                           1::2]) * 0.25
+    #             ##
+    #         quant = np.rint(img).clip(0, 255).astype(np.uint8)
+    #         quant_ds = np.rint(depth).clip(0, 255).astype(np.uint8)
+    #         ex = tf.train.Example(features=tf.train.Features(feature={
+    #             #'shape': tf.train.Feature(int64_list=tf.train.Int64List(value=quant.shape)),
+    #             #'data': tf.train.Feature(bytes_list=tf.train.BytesList(value=[quant.tostring()]))}))
+    #             'shape_rgbds': tf.train.Feature(int64_list=tf.train.Int64List(value=quant.shape)),
+    #             'data_rgbds': tf.train.Feature(bytes_list=tf.train.BytesList(value=[quant.tostring()])),
+    #             'shape_ds': tf.train.Feature(int64_list=tf.train.Int64List(value=quant_ds.shape)),
+    #             'data_ds': tf.train.Feature(bytes_list=tf.train.BytesList(value=[quant_ds.tostring()]))
+    #         }))
+    #         tfr_writer.write(ex.SerializeToString())
+    #     self.cur_images += 1
+    #
+    # ##
     def add_labels(self, labels):
         if self.print_progress:
             print('%-40s\r' % 'Saving labels...', end='', flush=True)
         assert labels.shape[0] == self.cur_images
         with open(self.tfr_prefix + '-rxx.labels', 'wb') as f:
             np.save(f, labels.astype(np.float32))
-            
+
     def __enter__(self):
         return self
-    
+
     def __exit__(self, *args):
         self.close()
 
@@ -166,7 +210,7 @@ class ThreadPool(object):
 
         def task_func(prepared, idx):
             return process_func(prepared)
-           
+
         def retire_result():
             processed, (prepared, idx) = self.get_result(task_func)
             results[idx] = processed
@@ -174,7 +218,7 @@ class ThreadPool(object):
                 yield post_func(results[retire_idx[0]])
                 results[retire_idx[0]] = None
                 retire_idx[0] += 1
-    
+
         for idx, item in enumerate(item_iterator):
             prepared = pre_func(item)
             results.append(None)
@@ -191,7 +235,7 @@ def display(tfrecord_dir):
     tfutil.init_tf({'gpu_options.allow_growth': True})
     dset = dataset.TFRecordDataset(tfrecord_dir, max_label_size='full', repeat=False, shuffle_mb=0)
     tfutil.init_uninited_vars()
-    
+
     idx = 0
     while True:
         try:
@@ -217,7 +261,7 @@ def extract(tfrecord_dir, output_dir):
     tfutil.init_tf({'gpu_options.allow_growth': True})
     dset = dataset.TFRecordDataset(tfrecord_dir, max_label_size=0, repeat=False, shuffle_mb=0)
     tfutil.init_uninited_vars()
-    
+
     print('Extracting images to "%s"' % output_dir)
     if not os.path.isdir(output_dir):
         os.makedirs(output_dir)
@@ -247,7 +291,7 @@ def compare(tfrecord_dir_a, tfrecord_dir_b, ignore_labels):
     print('Loading dataset "%s"' % tfrecord_dir_b)
     dset_b = dataset.TFRecordDataset(tfrecord_dir_b, max_label_size=max_label_size, repeat=False, shuffle_mb=0)
     tfutil.init_uninited_vars()
-    
+
     print('Comparing datasets')
     idx = 0
     identical_images = 0
@@ -297,7 +341,7 @@ def create_mnist(tfrecord_dir, mnist_dir):
     assert np.min(labels) == 0 and np.max(labels) == 9
     onehot = np.zeros((labels.size, np.max(labels) + 1), dtype=np.float32)
     onehot[np.arange(labels.size), labels] = 1.0
-    
+
     with TFRecordExporter(tfrecord_dir, images.shape[0]) as tfr:
         order = tfr.choose_shuffled_order()
         for idx in range(order.size):
@@ -315,7 +359,7 @@ def create_mnistrgb(tfrecord_dir, mnist_dir, num_images=1000000, random_seed=123
     images = np.pad(images, [(0,0), (2,2), (2,2)], 'constant', constant_values=0)
     assert images.shape == (60000, 32, 32) and images.dtype == np.uint8
     assert np.min(images) == 0 and np.max(images) == 255
-    
+
     with TFRecordExporter(tfrecord_dir, num_images) as tfr:
         rnd = np.random.RandomState(random_seed)
         for idx in range(num_images):
@@ -429,7 +473,7 @@ def create_lsun(tfrecord_dir, lmdb_dir, resolution=256, max_images=None):
                     print(sys.exc_info()[1])
                 if tfr.cur_images == max_images:
                     break
-        
+
 #----------------------------------------------------------------------------
 
 def create_celeba(tfrecord_dir, celeba_dir, cx=89, cy=121):
@@ -439,7 +483,7 @@ def create_celeba(tfrecord_dir, celeba_dir, cx=89, cy=121):
     expected_images = 202599
     if len(image_filenames) != expected_images:
         error('Expected to find %d images' % expected_images)
-    
+
     with TFRecordExporter(tfrecord_dir, len(image_filenames)) as tfr:
         order = tfr.choose_shuffled_order()
         for idx in range(order.size):
@@ -459,7 +503,7 @@ def create_celebahq(tfrecord_dir, celeba_dir, delta_dir, num_threads=4, num_task
     with open(os.path.join(celeba_dir, 'Anno', 'list_landmarks_celeba.txt'), 'rt') as file:
         landmarks = [[float(value) for value in line.split()[1:]] for line in file.readlines()[2:]]
         landmarks = np.float32(landmarks).reshape(-1, 5, 2)
-    
+
     print('Loading CelebA-HQ deltas from "%s"' % delta_dir)
     import scipy.ndimage
     import hashlib
@@ -484,7 +528,7 @@ def create_celebahq(tfrecord_dir, celeba_dir, delta_dir, num_threads=4, num_task
     # Must use pillow version 3.1.1 for everything to work correctly.
     if getattr(PIL, 'PILLOW_VERSION', '') != '3.1.1':
         error('create_celebahq requires pillow version 3.1.1') # conda install pillow=3.1.1
-        
+
     # Must use libjpeg version 8d for everything to work correctly.
     img = np.array(PIL.Image.open(os.path.join(celeba_dir, 'img_celeba', '000001.jpg')))
     md5 = hashlib.md5()
@@ -553,23 +597,23 @@ def create_celebahq(tfrecord_dir, celeba_dir, delta_dir, num_threads=4, num_task
             img += (np.median(img, axis=(0,1)) - img) * np.clip(mask, 0.0, 1.0)
             img = PIL.Image.fromarray(np.uint8(np.clip(np.round(img), 0, 255)), 'RGB')
             quad += pad[0:2]
-            
+
         # Transform.
         img = img.transform((4096, 4096), PIL.Image.QUAD, (quad + 0.5).flatten(), PIL.Image.BILINEAR)
         img = img.resize((1024, 1024), PIL.Image.ANTIALIAS)
         img = np.asarray(img).transpose(2, 0, 1)
-        
+
         # Verify MD5.
         md5 = hashlib.md5()
         md5.update(img.tobytes())
         assert md5.hexdigest() == fields['proc_md5'][idx]
-        
+
         # Load delta image and original JPG.
         with zipfile.ZipFile(os.path.join(delta_dir, 'deltas%05d.zip' % (idx - idx % 1000)), 'r') as zip:
             delta_bytes = zip.read('delta%05d.dat' % idx)
         with open(orig_path, 'rb') as file:
             orig_bytes = file.read()
-        
+
         # Decrypt delta image, using original JPG data as decryption key.
         algorithm = cryptography.hazmat.primitives.hashes.SHA256()
         backend = cryptography.hazmat.backends.default_backend()
@@ -577,10 +621,10 @@ def create_celebahq(tfrecord_dir, celeba_dir, delta_dir, num_threads=4, num_task
         kdf = cryptography.hazmat.primitives.kdf.pbkdf2.PBKDF2HMAC(algorithm=algorithm, length=32, salt=salt, iterations=100000, backend=backend)
         key = base64.urlsafe_b64encode(kdf.derive(orig_bytes))
         delta = np.frombuffer(bz2.decompress(cryptography.fernet.Fernet(key).decrypt(delta_bytes)), dtype=np.uint8).reshape(3, 1024, 1024)
-        
+
         # Apply delta image.
         img = img + delta
-        
+
         # Verify MD5.
         md5 = hashlib.md5()
         md5.update(img.tobytes())
@@ -600,7 +644,7 @@ def create_from_images(tfrecord_dir, image_dir, shuffle):
     image_filenames = sorted(glob.glob(os.path.join(image_dir, '*')))
     if len(image_filenames) == 0:
         error('No input images found')
-        
+
     img = np.asarray(PIL.Image.open(image_filenames[0]))
     resolution = img.shape[0]
     channels = img.shape[2] if img.ndim == 3 else 1
@@ -610,7 +654,7 @@ def create_from_images(tfrecord_dir, image_dir, shuffle):
         error('Input image resolution must be a power-of-two')
     if channels not in [1, 3]:
         error('Input images must be stored as RGB or grayscale')
-    
+
     with TFRecordExporter(tfrecord_dir, len(image_filenames)) as tfr:
         order = tfr.choose_shuffled_order() if shuffle else np.arange(len(image_filenames))
         for idx in range(order.size):
@@ -620,6 +664,168 @@ def create_from_images(tfrecord_dir, image_dir, shuffle):
             else:
                 img = img.transpose(2, 0, 1) # HWC => CHW
             tfr.add_image(img)
+
+#----------------------------------------------------------------------------
+
+#----------Jiarui-------------------------------------------------------------
+
+# def create_from_depth(tfrecord_dir, image_dir, shuffle):
+#     print('Loading images from "%s"' % image_dir)
+#     image_filenames = sorted(glob.glob(os.path.join(image_dir, '*')))
+#     if len(image_filenames) == 0:
+#         error('No input images found')
+#
+#     img = np.asarray(PIL.Image.open(image_filenames[0]))
+#     resolution = img.shape[0]
+#     channels = img.shape[2] if img.ndim == 3 else 1
+#     if img.shape[1] != resolution:
+#         error('Input images must have the same width and height')
+#     if resolution != 2 ** int(np.floor(np.log2(resolution))):
+#         error('Input image resolution must be a power-of-two')
+#     if channels not in [1, 3]:
+#         error('Input images must be stored as RGB or grayscale')
+#
+#     with TFRecordExporter(tfrecord_dir, len(image_filenames)) as tfr:
+#         order = tfr.choose_shuffled_order() if shuffle else np.arange(len(image_filenames))
+#         for idx in range(order.size):
+#
+#             img = np.asarray(PIL.Image.open(image_filenames[order[idx]]))
+#
+#             if channels == 1:
+#                 ## added by Jiarui
+#                 img_temp = img[np.newaxis, :, :] # HW => CHW
+#                 img = np.concatenate((img_temp, img_temp, img_temp), 0)
+#                 # img = img[np.newaxis, :, :] # HW => CHW
+#             else:
+#                 img = img.transpose(2, 0, 1) # HWC => CHW
+#             tfr.add_image(img)
+#
+# #----------------------------------------------------------------------------
+# # ------- Jiarui --------------------------------------------------------------
+# def create_from_images_and_depth_jiarui(tfrecord_dir, rgb_dir, depth_dir, shuffle):
+#     #
+#     print('Loading images from "%s" and depths from "%s"' % (rgb_dir, depth_dir))
+#     image_filenames = sorted(glob.glob(os.path.join(rgb_dir, '*')))
+#     depth_filenames = sorted(glob.glob(os.path.join(depth_dir, '*')))
+#     #
+#     ## make sure images and depths actually exist at the provided locations
+#     if len(image_filenames) == 0:
+#         error('No input images found')
+#     if len(depth_filenames) == 0:
+#         error('No depth images found')
+#     if len(depth_filenames) != len(image_filenames):
+#         error('Number of depth images does not match number of RGB images')
+#         ##
+#     ## check the dimensions
+#     img = np.asarray(PIL.Image.open(image_filenames[0]))
+#     resolution_rgb = img.shape[0]
+#     channels_rgb = img.shape[2] if img.ndim == 3 else 1
+#     if img.shape[1] != resolution_rgb:
+#         error('Input images must have the same width and height')
+#     if resolution_rgb != 2 ** int(np.floor(np.log2(resolution_rgb))):
+#         error('Input image resolution must be a power-of-two')
+#     if channels_rgb not in [1, 3]:
+#         error('Input images must be stored as RGB or grayscale')
+#         ##
+#     depth = np.asarray(PIL.Image.open(depth_filenames[0]))
+#     resolution_depth = depth.shape[0]
+#     channels_depth = depth.shape[2] if depth.ndim == 3 else 1
+#     if depth.shape[1] != resolution_depth:
+#         error('Input depths must have the same width and height')
+#     if resolution_depth != 2 ** int(np.floor(np.log2(resolution_depth))):
+#         error('Input depth resolution must be a power-of-two')
+#     if channels_depth not in [1, 3]:
+#         error('Input depths must be stored as RGB or grayscale')
+#         #
+#     with TFRecordExporter(tfrecord_dir, len(image_filenames)) as tfr:
+#         ##
+#         order = tfr.choose_shuffled_order() if shuffle else np.arange(len(image_filenames))
+#         ##
+#         for idx in range(order.size):
+#             img = np.asarray(PIL.Image.open(image_filenames[order[idx]]))
+#             depth = np.asarray(PIL.Image.open(depth_filenames[order[idx]]))
+#             # pdb.set_trace()
+#             imagescene_info = image_filenames[order[idx]].split('_')
+#             # alpha = int(''.join( [ss.split('=')[-1].split('.')[0] for ss in imagescene_info if 'az' in ss or 'al' in ss]))
+#             # pdb.set_trace()
+#             if channels_rgb == 1:
+#                 img = img[np.newaxis, :, :]  # HW => CHW
+#             else:
+#                 img = img.transpose(2, 0, 1)  # HWC => CHW
+#                 #
+#             if channels_depth == 1:
+#                 depth = depth[np.newaxis, :, :]  # HW => CHW
+#             else:
+#                 depth = depth.transpose(2, 0, 1)  # HWC => CHW
+#                 #
+#             img_rgbd = np.concatenate((img, depth), axis=0)
+#             tfr.add_image_and_depth(img_rgbd, depth)
+#
+#
+# # ------- Jiarui --------------------------------------------------------------
+#
+# # ------- askc --------------------------------------------------------------
+# def create_from_images_and_depth(tfrecord_dir, rgb_dir, depth_dir, shuffle):
+#     #
+#     print('Loading images from "%s" and depths from "%s"' % (rgb_dir, depth_dir))
+#     image_filenames = sorted(glob.glob(os.path.join(rgb_dir, '*')))
+#     depth_filenames = sorted(glob.glob(os.path.join(depth_dir, '*')))
+#     #
+#     ## make sure images and depths actually exist at the provided locations
+#     if len(image_filenames) == 0:
+#         error('No input images found')
+#     if len(depth_filenames) == 0:
+#         error('No depth images found')
+#     if len(depth_filenames) != len(image_filenames):
+#         error('Number of depth images does not match number of RGB images')
+#         ##
+#     ## check the dimensions
+#     img = np.asarray(PIL.Image.open(image_filenames[0]))
+#     resolution_rgb = img.shape[0]
+#     channels_rgb = img.shape[2] if img.ndim == 3 else 1
+#     if img.shape[1] != resolution_rgb:
+#         error('Input images must have the same width and height')
+#     if resolution_rgb != 2 ** int(np.floor(np.log2(resolution_rgb))):
+#         error('Input image resolution must be a power-of-two')
+#     if channels_rgb not in [1, 3]:
+#         error('Input images must be stored as RGB or grayscale')
+#         ##
+#     depth = np.asarray(PIL.Image.open(depth_filenames[0]))
+#     resolution_depth = depth.shape[0]
+#     channels_depth = depth.shape[2] if depth.ndim == 3 else 1
+#     if depth.shape[1] != resolution_depth:
+#         error('Input depths must have the same width and height')
+#     if resolution_depth != 2 ** int(np.floor(np.log2(resolution_depth))):
+#         error('Input depth resolution must be a power-of-two')
+#     if channels_depth not in [1, 3]:
+#         error('Input depths must be stored as RGB or grayscale')
+#         #
+#     with TFRecordExporter(tfrecord_dir, len(image_filenames)) as tfr:
+#         ##
+#         order = tfr.choose_shuffled_order() if shuffle else np.arange(len(image_filenames))
+#         ##
+#         for idx in range(order.size):
+#             img = np.asarray(PIL.Image.open(image_filenames[order[idx]]))
+#             depth = np.asarray(PIL.Image.open(depth_filenames[order[idx]]))
+#             # pdb.set_trace()
+#             imagescene_info = image_filenames[order[idx]].split('_')
+#             # alpha = int(''.join( [ss.split('=')[-1].split('.')[0] for ss in imagescene_info if 'az' in ss or 'al' in ss]))
+#             # pdb.set_trace()
+#             if channels_rgb == 1:
+#                 img = img[np.newaxis, :, :]  # HW => CHW
+#             else:
+#                 img = img.transpose(2, 0, 1)  # HWC => CHW
+#                 #
+#             if channels_depth == 1:
+#                 depth = depth[np.newaxis, :, :]  # HW => CHW
+#             else:
+#                 depth = depth.transpose(2, 0, 1)  # HWC => CHW
+#                 #
+#             img_rgbd = np.concatenate((img, depth), axis=0)
+#             tfr.add_image(img_rgbd)
+#
+#
+# # ------- askc --------------------------------------------------------------
 
 #----------------------------------------------------------------------------
 
@@ -644,7 +850,7 @@ def execute_cmdline(argv):
         prog        = prog,
         description = 'Tool for creating, extracting, and visualizing Progressive GAN datasets.',
         epilog      = 'Type "%s <command> -h" for more information.' % prog)
-        
+
     subparsers = parser.add_subparsers(dest='command')
     subparsers.required = True
     def add_command(cmd, desc, example=None):
@@ -654,7 +860,7 @@ def execute_cmdline(argv):
     p = add_command(    'display',          'Display images in dataset.',
                                             'display datasets/mnist')
     p.add_argument(     'tfrecord_dir',     help='Directory containing dataset')
-  
+
     p = add_command(    'extract',          'Extract images from dataset.',
                                             'extract datasets/mnist mnist-images')
     p.add_argument(     'tfrecord_dir',     help='Directory containing dataset')
@@ -720,6 +926,27 @@ def execute_cmdline(argv):
     p.add_argument(     'tfrecord_dir',     help='New dataset directory to be created')
     p.add_argument(     'image_dir',        help='Directory containing the images')
     p.add_argument(     '--shuffle',        help='Randomize image order (default: 1)', type=int, default=1)
+
+    p = add_command(    'create_from_images_and_depth', 'Create dataset from a directory full of images and a directory of their corresponding depth images.',
+                                            'create_from_images datasets/mydataset myimagedir')
+    p.add_argument(     'tfrecord_dir',     help='New dataset directory to be created')
+    p.add_argument(     'rgb_dir',        help='Directory containing the rgb images')
+    p.add_argument(     'depth_dir',        help='Directory containing the depth images')
+    p.add_argument(     '--shuffle',        help='Randomize image order (default: 1)', type=int, default=1)
+
+    p = add_command(    'create_from_images_and_depth_jiarui', 'Create dataset from a directory full of images and a directory of their corresponding depth images.',
+                                            'create_from_images datasets/mydataset myimagedir')
+    p.add_argument(     'tfrecord_dir',     help='New dataset directory to be created')
+    p.add_argument(     'rgb_dir',        help='Directory containing the rgb images')
+    p.add_argument(     'depth_dir',        help='Directory containing the depth images')
+    p.add_argument(     '--shuffle',        help='Randomize image order (default: 1)', type=int, default=1)
+
+    p = add_command('create_from_depth',
+                    'Create dataset from a directory full of images and a directory of their corresponding depth images.',
+                    'create_from_images datasets/mydataset myimagedir')
+    p.add_argument('tfrecord_dir', help='New dataset directory to be created')
+    p.add_argument('image_dir', help='Directory containing the depth images')
+    p.add_argument('--shuffle', help='Randomize image order (default: 1)', type=int, default=1)
 
     p = add_command(    'create_from_hdf5', 'Create dataset from legacy HDF5 archive.',
                                             'create_from_hdf5 datasets/celebahq ~/downloads/celeba-hq-1024x1024.h5')

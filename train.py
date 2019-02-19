@@ -19,7 +19,7 @@ import misc
 # Choose the size and contents of the image snapshot grids that are exported
 # periodically during training.
 
-def setup_snapshot_image_grid(G, training_set,
+def setup_snapshot_image_grid(G, training_set, depth_set,
     size    = '1080p',      # '1080p' = to be viewed on 1080p display, '4k' = to be viewed on 4k display.
     layout  = 'random'):    # 'random' = grid contents are selected randomly, 'row_per_class' = each row corresponds to one class label.
 
@@ -35,6 +35,9 @@ def setup_snapshot_image_grid(G, training_set,
     # Fill in reals and labels.
     reals = np.zeros([gw * gh] + training_set.shape, dtype=training_set.dtype)
     labels = np.zeros([gw * gh, training_set.label_size], dtype=training_set.label_dtype)
+    ## added by Jiarui
+    depths = np.zeros([gw * gh] + depth_set.shape, dtype=depth_set.dtype)
+    ## end added by Jiarui
     for idx in range(gw * gh):
         x = idx % gw; y = idx // gw
         while True:
@@ -44,11 +47,15 @@ def setup_snapshot_image_grid(G, training_set,
                     continue
             reals[idx] = real[0]
             labels[idx] = label[0]
+            ## added by Jiarui
+            depth, _ = depth_set.get_minibatch_np(1)
+            depths[idx] = depth[0]
+            ## end added by Jiarui
             break
 
     # Generate latents.
     latents = misc.random_latents(gw * gh, G)
-    return (gw, gh), reals, labels, latents
+    return (gw, gh), reals, labels, depths, latents
 
 #----------------------------------------------------------------------------
 # Just-in-time processing of training images before feeding them to the networks.
@@ -149,6 +156,7 @@ def train_progressive_gan(
 
     maintenance_start_time = time.time()
     training_set = dataset.load_dataset(data_dir=config.data_dir, verbose=True, **config.dataset)
+    depth_set = dataset.load_dataset(data_dir=config.data_dir, verbose=True, **config.depth_images)
 
     # Construct networks.
     with tf.device('/gpu:0'):
@@ -173,6 +181,11 @@ def train_progressive_gan(
         reals, labels   = training_set.get_minibatch_tf()
         reals_split     = tf.split(reals, config.num_gpus)
         labels_split    = tf.split(labels, config.num_gpus)
+        ## addded by Jiarui
+        depth, labels_depth= depth_set.get_minibatch_tf()
+        depth_split = tf.split(depth, config.num_gpus)
+        # depth_split = depth
+        ## end added by Jiarui
     G_opt = tfutil.Optimizer(name='TrainG', learning_rate=lrate_in, **config.G_opt)
     D_opt = tfutil.Optimizer(name='TrainD', learning_rate=lrate_in, **config.D_opt)
     for gpu in range(config.num_gpus):
@@ -182,24 +195,45 @@ def train_progressive_gan(
             lod_assign_ops = [tf.assign(G_gpu.find_var('lod'), lod_in), tf.assign(D_gpu.find_var('lod'), lod_in)]
             reals_gpu = process_reals(reals_split[gpu], lod_in, mirror_augment, training_set.dynamic_range, drange_net)
             labels_gpu = labels_split[gpu]
+            ## added by Jiarui
+            depth_gpu = process_reals(depth_split[gpu], lod_in, False, depth_set.dynamic_range, drange_net)
+            ## end added by Jiarui
             with tf.name_scope('G_loss'), tf.control_dependencies(lod_assign_ops):
-                G_loss = tfutil.call_func_by_name(G=G_gpu, D=D_gpu, opt=G_opt, training_set=training_set, minibatch_size=minibatch_split, **config.G_loss)
+                ## added by Jiarui
+                # G_loss = tfutil.call_func_by_name(G=G_gpu, D=D_gpu, opt=G_opt, training_set=training_set, minibatch_size=minibatch_split, **config.G_loss)
+                G_loss = tfutil.call_func_by_name(G=G_gpu, D=D_gpu, opt=G_opt, training_set=training_set, depth=depth_gpu,
+                                                  minibatch_size=minibatch_split, **config.G_loss)
+                ## end added by Jiarui
             with tf.name_scope('D_loss'), tf.control_dependencies(lod_assign_ops):
-                D_loss = tfutil.call_func_by_name(G=G_gpu, D=D_gpu, opt=D_opt, training_set=training_set, minibatch_size=minibatch_split, reals=reals_gpu, labels=labels_gpu, **config.D_loss)
+                ## added by Jiarui
+                # D_loss = tfutil.call_func_by_name(G=G_gpu, D=D_gpu, opt=D_opt, training_set=training_set, minibatch_size=minibatch_split, reals=reals_gpu, labels=labels_gpu, **config.D_loss)
+                D_loss = tfutil.call_func_by_name(G=G_gpu, D=D_gpu, opt=D_opt, training_set=training_set,
+                                                  minibatch_size=minibatch_split, depth=depth_gpu, reals=reals_gpu, labels=labels_gpu,
+                                                  **config.D_loss)
+                ## end added by Jiarui
             G_opt.register_gradients(tf.reduce_mean(G_loss), G_gpu.trainables)
             D_opt.register_gradients(tf.reduce_mean(D_loss), D_gpu.trainables)
     G_train_op = G_opt.apply_updates()
     D_train_op = D_opt.apply_updates()
 
     print('Setting up snapshot image grid...')
-    grid_size, grid_reals, grid_labels, grid_latents = setup_snapshot_image_grid(G, training_set, **config.grid)
+    ## added by Jiarui
+    # grid_size, grid_reals, grid_labels, grid_latents = setup_snapshot_image_grid(G, training_set, **config.grid)
+    grid_size, grid_reals, grid_labels, grid_depths, grid_latents = setup_snapshot_image_grid(G, training_set, depth_set, **config.grid)
     sched = TrainingSchedule(total_kimg * 1000, training_set, **config.sched)
-    grid_fakes = Gs.run(grid_latents, grid_labels, minibatch_size=sched.minibatch//config.num_gpus)
+    # grid_fakes = Gs.run(grid_latents, grid_labels, minibatch_size=sched.minibatch//config.num_gpus)
+    # sched_depth = TrainingSchedule(total_kimg * 1000, depth_set, **config.sched)
+    grid_fakes = Gs.run(grid_latents, grid_depths, grid_labels, minibatch_size=sched.minibatch // config.num_gpus)
+    ## end added by Jiarui
 
     print('Setting up result dir...')
     result_subdir = misc.create_result_subdir(config.result_dir, config.desc)
-    misc.save_image_grid(grid_reals, os.path.join(result_subdir, 'reals.png'), drange=training_set.dynamic_range, grid_size=grid_size)
-    misc.save_image_grid(grid_fakes, os.path.join(result_subdir, 'fakes%06d.png' % 0), drange=drange_net, grid_size=grid_size)
+    # misc.save_image_grid(grid_reals, os.path.join(result_subdir, 'reals.png'), drange=training_set.dynamic_range, grid_size=grid_size)
+    # misc.save_image_grid(grid_fakes, os.path.join(result_subdir, 'fakes%06d.png' % 0), drange=drange_net, grid_size=grid_size)
+    misc.save_image_grid(grid_reals[:, :3, :, :], os.path.join(result_subdir, 'reals.png'), drange=training_set.dynamic_range,
+                         grid_size=grid_size)
+    misc.save_image_grid(grid_fakes[:, :3, :, :], os.path.join(result_subdir, 'fakes%06d.png' % 0), drange=drange_net,
+                         grid_size=grid_size)
     summary_log = tf.summary.FileWriter(result_subdir)
     if save_tf_graph:
         summary_log.add_graph(tf.get_default_graph())
@@ -218,6 +252,9 @@ def train_progressive_gan(
         # Choose training parameters and configure training ops.
         sched = TrainingSchedule(cur_nimg, training_set, **config.sched)
         training_set.configure(sched.minibatch, sched.lod)
+        ## added by Jiarui
+        depth_set.configure(sched.minibatch, sched.lod)
+        ## end added by Jiarui
         if reset_opt_for_new_lod:
             if np.floor(sched.lod) != np.floor(prev_lod) or np.ceil(sched.lod) != np.ceil(prev_lod):
                 G_opt.reset_optimizer_state(); D_opt.reset_optimizer_state()
@@ -258,8 +295,13 @@ def train_progressive_gan(
 
             # Save snapshots.
             if cur_tick % image_snapshot_ticks == 0 or done:
-                grid_fakes = Gs.run(grid_latents, grid_labels, minibatch_size=sched.minibatch//config.num_gpus)
-                misc.save_image_grid(grid_fakes, os.path.join(result_subdir, 'fakes%06d.png' % (cur_nimg // 1000)), drange=drange_net, grid_size=grid_size)
+                # grid_fakes = Gs.run(grid_latents, grid_labels, minibatch_size=sched.minibatch//config.num_gpus)
+                # misc.save_image_grid(grid_fakes, os.path.join(result_subdir, 'fakes%06d.png' % (cur_nimg // 1000)), drange=drange_net, grid_size=grid_size)
+                grid_fakes = Gs.run(grid_latents, grid_depths, grid_labels,
+                                    minibatch_size=sched.minibatch // config.num_gpus)
+                misc.save_image_grid(grid_fakes[:, :3, :, :], os.path.join(result_subdir, 'fakes%06d.png' % (cur_nimg // 1000)),
+                                     drange=drange_net, grid_size=grid_size)
+
             if cur_tick % network_snapshot_ticks == 0 or done:
                 misc.save_pkl((G, D, Gs), os.path.join(result_subdir, 'network-snapshot-%06d.pkl' % (cur_nimg // 1000)))
 

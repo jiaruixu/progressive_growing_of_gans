@@ -22,12 +22,18 @@ def fp32(*values):
 #----------------------------------------------------------------------------
 # Generator loss function used in the paper (WGAN + AC-GAN).
 
-def G_wgan_acgan(G, D, opt, training_set, minibatch_size,
-    cond_weight = 1.0): # Weight of the conditioning term.
-
+## added by Jiarui
+# def G_wgan_acgan(G, D, opt, training_set, minibatch_size,
+#     cond_weight = 1.0): # Weight of the conditioning term.
+def G_wgan_acgan(G, D, opt, training_set, depth, minibatch_size,
+      cond_weight=1.0):  # Weight of the conditioning term.
+## end added by Jiarui
     latents = tf.random_normal([minibatch_size] + G.input_shapes[0][1:])
     labels = training_set.get_random_labels_tf(minibatch_size)
-    fake_images_out = G.get_output_for(latents, labels, is_training=True)
+    ## added by Jiarui
+    # fake_images_out = G.get_output_for(latents, labels, is_training=True)
+    fake_images_out = G.get_output_for(latents, depth, labels, is_training=True)
+    ## end added by Jiarui
     fake_scores_out, fake_labels_out = fp32(D.get_output_for(fake_images_out, is_training=True))
     loss = -fake_scores_out
 
@@ -40,14 +46,17 @@ def G_wgan_acgan(G, D, opt, training_set, minibatch_size,
 #----------------------------------------------------------------------------
 # Discriminator loss function used in the paper (WGAN-GP + AC-GAN).
 
-def D_wgangp_acgan(G, D, opt, training_set, minibatch_size, reals, labels,
+def D_wgangp_acgan(G, D, opt, training_set, minibatch_size, depth, reals, labels,
     wgan_lambda     = 10.0,     # Weight for the gradient penalty term.
     wgan_epsilon    = 0.001,    # Weight for the epsilon term, \epsilon_{drift}.
     wgan_target     = 1.0,      # Target value for gradient magnitudes.
     cond_weight     = 1.0):     # Weight of the conditioning terms.
 
     latents = tf.random_normal([minibatch_size] + G.input_shapes[0][1:])
-    fake_images_out = G.get_output_for(latents, labels, is_training=True)
+    ## added by Jiarui
+    # fake_images_out = G.get_output_for(latents, labels, is_training=True)
+    fake_images_out = G.get_output_for(latents, depth, labels, is_training=True)
+    ## end added by Jiarui
     real_scores_out, real_labels_out = fp32(D.get_output_for(reals, is_training=True))
     fake_scores_out, fake_labels_out = fp32(D.get_output_for(fake_images_out, is_training=True))
     real_scores_out = tfutil.autosummary('Loss/real_scores', real_scores_out)
