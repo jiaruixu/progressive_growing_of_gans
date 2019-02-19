@@ -18,7 +18,7 @@ class EasyDict(dict):
 #----------------------------------------------------------------------------
 # Paths.
 
-data_dir = '/mnt/fcav/3D-lighting/dataset_3000'
+data_dir = '/mnt/fcav/3D-lighting/dataset'
 result_dir = '/mnt/fcav/3D-lighting/results'
 
 #----------------------------------------------------------------------------
