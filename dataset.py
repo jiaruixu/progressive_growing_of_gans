@@ -21,12 +21,40 @@ def parse_tfrecord_tf(record):
     data = tf.decode_raw(features['data'], tf.uint8)
     return tf.reshape(data, features['shape'])
 
+# def parse_tfrecord_tf_askc(record):
+#     features = tf.parse_single_example(record, features={
+#         'shape_rgbds': tf.FixedLenFeature([3], tf.int64),
+#         'data_rgbds': tf.FixedLenFeature([], tf.string),
+#         'shape_ds': tf.FixedLenFeature([3], tf.int64),
+#         'data_ds': tf.FixedLenFeature([], tf.string)
+#         })
+#     decode_rgb = tf.decode_raw(features['data_rgbds'], tf.uint8)
+#     decode_depth = tf.decode_raw(features['data_ds'], tf.uint8)
+#
+#     data_rgb = tf.reshape(decode_rgb, features['shape_rgbds'])
+#     data_depth = tf.reshape(decode_depth, features['shape_ds'])
+#     return data_rgb, data_depth
+
 def parse_tfrecord_np(record):
     ex = tf.train.Example()
     ex.ParseFromString(record)
     shape = ex.features.feature['shape'].int64_list.value
     data = ex.features.feature['data'].bytes_list.value[0]
     return np.fromstring(data, np.uint8).reshape(shape)
+
+# def parse_tfrecord_np_askc(record):
+#     ex = tf.train.Example()
+#     ex.ParseFromString(record)
+#     shape_rgb = ex.features.feature['shape_rgbds'].int64_list.value
+#     data_rgb = ex.features.feature['data_rgbds'].bytes_list.value[0]
+#     shape_depth = ex.features.feature['shape_ds'].int64_list.value
+#     data_depth = ex.features.feature['data_ds'].bytes_list.value[0]
+#     print(np.fromstring(data_rgb, np.uint8).shape)
+#     print(np.fromstring(data_depth, np.uint8).shape)
+#     #pdb.set_trace()
+#     rgb_ = np.fromstring(data_rgb, np.uint8).reshape(shape_rgb)
+#     depth_ = np.fromstring(data_depth, np.uint8).reshape(shape_depth)
+#     return rgb_, depth_
 
 #----------------------------------------------------------------------------
 # Dataset class that loads data from tfrecords files.
@@ -167,6 +195,166 @@ class TFRecordDataset:
 
 #----------------------------------------------------------------------------
 # Base class for datasets that are generated on the fly.
+
+# ## ASKC --> Dataset class that loads data from tfrecords files.
+#
+# class TFRecordDataset:
+#     def __init__(self,
+#         tfrecord_dir,               # Directory containing a collection of tfrecords files.
+#         resolution      = None,     # Dataset resolution, None = autodetect.
+#         label_file      = None,     # Relative path of the labels file, None = autodetect.
+#         max_label_size  = 0,        # 0 = no labels, 'full' = full labels, <int> = N first label components.
+#         repeat          = True,     # Repeat dataset indefinitely.
+#         shuffle_mb      = 4096,     # Shuffle data within specified window (megabytes), 0 = disable shuffling.
+#         prefetch_mb     = 2048,     # Amount of data to prefetch (megabytes), 0 = disable prefetching.
+#         buffer_mb       = 256,      # Read buffer size (megabytes).
+#         num_threads     = 2):       # Number of concurrent threads.
+#
+#         self.tfrecord_dir       = tfrecord_dir
+#         self.resolution         = None
+#         self.resolution_log2    = None
+#         self.shape              = []        # [channel, height, width]
+#         self.dtype              = 'uint8'
+#         self.dynamic_range      = [0, 255]
+#         self.label_file         = label_file
+#         self.label_size         = None      # [component]
+#         self.label_dtype        = None
+#         self._np_labels         = None
+#         self._tf_minibatch_in   = None
+#         self._tf_labels_var     = None
+#         self._tf_labels_dataset = None
+#         self._tf_datasets       = dict()
+#         self._tf_iterator       = None
+#         self._tf_init_ops       = dict()
+#         self._tf_minibatch_np   = None
+#         self._cur_minibatch     = -1
+#         self._cur_lod           = -1
+#
+#         ## List tfrecords files and inspect their shapes.
+#         assert os.path.isdir(self.tfrecord_dir)
+#         tfr_files = sorted(glob.glob(os.path.join(self.tfrecord_dir, '*.tfrecords')))
+#         assert len(tfr_files) >= 1
+#         tfr_shapes = []
+#         tfr_shapes_ds = []
+#         for tfr_file in tfr_files:
+#             tfr_opt = tf.python_io.TFRecordOptions(tf.python_io.TFRecordCompressionType.NONE)
+#             for record in tf.python_io.tf_record_iterator(tfr_file, tfr_opt):
+#                 #tfr_shapes.append(parse_tfrecord_np(record).shape)
+#                 rgbds_, ds_ = parse_tfrecord_np_askc(record)
+#                 tfr_shapes.append(rgbds_.shape)
+#                 tfr_shapes_ds.append(ds_.shape)
+#                 break
+#
+#         ## Autodetect label filename.
+#         if self.label_file is None:
+#             guess = sorted(glob.glob(os.path.join(self.tfrecord_dir, '*.labels')))
+#             if len(guess):
+#                 self.label_file = guess[0]
+#         elif not os.path.isfile(self.label_file):
+#             guess = os.path.join(self.tfrecord_dir, self.label_file)
+#             if os.path.isfile(guess):
+#                 self.label_file = guess
+#
+#         ## Determine shape and resolution.
+#         ## of RGB-DS
+#         max_shape = max(tfr_shapes, key=lambda shape: np.prod(shape))
+#         self.resolution = resolution if resolution is not None else max_shape[1]
+#         self.resolution_log2 = int(np.log2(self.resolution))
+#         self.shape = [max_shape[0], self.resolution, self.resolution]
+#         ## of DS
+#         max_shape_ds = max(tfr_shapes_ds, key=lambda shape: np.prod(shape))
+#         self.resolution_ds = resolution if resolution is not None else max_shape_ds[1]
+#         self.resolution_log2_ds = int(np.log2(self.resolution_ds))
+#         self.shape_ds = [max_shape_ds[0], self.resolution_ds, self.resolution_ds]
+#         ## RGB-DS
+#         tfr_lods = [self.resolution_log2 - int(np.log2(shape[1])) for shape in tfr_shapes]
+#         assert all(shape[0] == max_shape[0] for shape in tfr_shapes)
+#         assert all(shape[1] == shape[2] for shape in tfr_shapes)
+#         assert all(shape[1] == self.resolution // (2**lod) for shape, lod in zip(tfr_shapes, tfr_lods))
+#         assert all(lod in tfr_lods for lod in range(self.resolution_log2 - 1))
+#         ## DS
+#         tfr_lods_ds = [self.resolution_log2_ds - int(np.log2(shape[1])) for shape in tfr_shapes_ds]
+#         assert all(shape[0] == max_shape_ds[0] for shape in tfr_shapes_ds)
+#         assert all(shape[1] == shape[2] for shape in tfr_shapes_ds)
+#         assert all(shape[1] == self.resolution_ds // (2**lod) for shape, lod in zip(tfr_shapes_ds, tfr_lods_ds))
+#         assert all(lod in tfr_lods_ds for lod in range(self.resolution_log2_ds - 1))
+#         ##
+#         ## Load labels.
+#         assert max_label_size == 'full' or max_label_size >= 0
+#         self._np_labels = np.zeros([1<<20, 0], dtype=np.float32)
+#         if self.label_file is not None and max_label_size != 0:
+#             self._np_labels = np.load(self.label_file)
+#             assert self._np_labels.ndim == 2
+#         if max_label_size != 'full' and self._np_labels.shape[1] > max_label_size:
+#             self._np_labels = self._np_labels[:, :max_label_size]
+#         self.label_size = self._np_labels.shape[1]
+#         self.label_dtype = self._np_labels.dtype.name
+#
+#         ##pdb.set_trace()
+#         # Build TF expressions.
+#         with tf.name_scope('Dataset'), tf.device('/cpu:0'):
+#             #
+#             self._tf_minibatch_in = tf.placeholder(tf.int64, name='minibatch_in', shape=[])
+#             #
+#             tf_labels_init = tf.zeros(self._np_labels.shape, self._np_labels.dtype)
+#             self._tf_labels_var = tf.Variable(tf_labels_init, name='labels_var')
+#             tfutil.set_vars({self._tf_labels_var: self._np_labels})
+#             self._tf_labels_dataset = tf.data.Dataset.from_tensor_slices(self._tf_labels_var)
+#             ##
+#             ## HERE
+#             for tfr_file, tfr_shape, tfr_lod in zip(tfr_files, tfr_shapes, tfr_lods):
+#                 if tfr_lod < 0:
+#                     continue
+#                 dset = tf.data.TFRecordDataset(tfr_file, compression_type='', buffer_size=buffer_mb<<20)
+#                 #dset = dset.map(parse_tfrecord_tf, num_parallel_calls=num_threads)
+#                 dset = dset.map(parse_tfrecord_tf_askc, num_parallel_calls=num_threads)
+#                 dset = tf.data.Dataset.zip((dset, self._tf_labels_dataset))
+#                 bytes_per_item = np.prod(tfr_shape) * np.dtype(self.dtype).itemsize
+#                 if shuffle_mb > 0:
+#                     dset = dset.shuffle(((shuffle_mb << 20) - 1) // bytes_per_item + 1)
+#                 if repeat:
+#                     dset = dset.repeat()
+#                 if prefetch_mb > 0:
+#                     dset = dset.prefetch(((prefetch_mb << 20) - 1) // bytes_per_item + 1)
+#                 dset = dset.batch(self._tf_minibatch_in)
+#                 self._tf_datasets[tfr_lod] = dset
+#             self._tf_iterator = tf.data.Iterator.from_structure(self._tf_datasets[0].output_types, self._tf_datasets[0].output_shapes)
+#             self._tf_init_ops = {lod: self._tf_iterator.make_initializer(dset) for lod, dset in self._tf_datasets.items()}
+#
+#     # Use the given minibatch size and level-of-detail for the data returned by get_minibatch_tf().
+#     def configure(self, minibatch_size, lod=0):
+#         lod = int(np.floor(lod))
+#         assert minibatch_size >= 1 and lod in self._tf_datasets
+#         if self._cur_minibatch != minibatch_size or self._cur_lod != lod:
+#             self._tf_init_ops[lod].run({self._tf_minibatch_in: minibatch_size})
+#             self._cur_minibatch = minibatch_size
+#             self._cur_lod = lod
+#
+#     # Get next minibatch as TensorFlow expressions.
+#     def get_minibatch_tf(self): # => images, labels
+#         return self._tf_iterator.get_next()
+#
+#     # Get next minibatch as NumPy arrays.
+#     def get_minibatch_np(self, minibatch_size, lod=0): # => images, labels
+#         self.configure(minibatch_size, lod)
+#         if self._tf_minibatch_np is None:
+#             self._tf_minibatch_np = self.get_minibatch_tf()
+#         return tfutil.run(self._tf_minibatch_np)
+#
+#     # Get random labels as TensorFlow expression.
+#     def get_random_labels_tf(self, minibatch_size): # => labels
+#         if self.label_size > 0:
+#             return tf.gather(self._tf_labels_var, tf.random_uniform([minibatch_size], 0, self._np_labels.shape[0], dtype=tf.int32))
+#         else:
+#             return tf.zeros([minibatch_size, 0], self.label_dtype)
+#
+#     # Get random labels as NumPy array.
+#     def get_random_labels_np(self, minibatch_size): # => labels
+#         if self.label_size > 0:
+#             return self._np_labels[np.random.randint(self._np_labels.shape[0], size=[minibatch_size])]
+#         else:
+#             return np.zeros([minibatch_size, 0], self.label_dtype)
+
 
 class SyntheticDataset:
     def __init__(self, resolution=1024, num_channels=3, dtype='uint8', dynamic_range=[0,255], label_size=0, label_dtype='float32'):
