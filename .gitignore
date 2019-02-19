@@ -1,0 +1,8 @@
+.idea/
+__pycache__/
+config.pyc
+example_import_script/
+
+*.jpg
+*.png
+*.jpeg
